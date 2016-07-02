@@ -26,9 +26,9 @@ def parser(x):
 	# convert timestamp to 
 	ret['timestamp'] = datetime.strptime(ret['timestamp'],'%Y-%m-%dT%H:%M:%S.%fZ')
 	# convert all time duration captured to floating point numbers
-	ret['request_processing_time'] = float(ret['request_processing_time'])
-	ret['backend_processing_time'] = float(ret['backend_processing_time'])
-	ret['response_processing_time'] = float(ret['request_processing_time'])
+	ret['request_processing_time'] =  max(0.0,float(ret['request_processing_time']))
+	ret['backend_processing_time'] =  max(0.0,float(ret['backend_processing_time']))
+	ret['response_processing_time'] = max(0.0,float(ret['response_processing_time']))
 	return ret
 
 def getDeltas(x):
@@ -72,8 +72,9 @@ if __name__=="__main__":
 	increases and decreases in cycles. The histogram plotted below gives a 
 	better idea about the same. 
 	We plot the histogram of all values greater that 1  and less that 536 
-	(99.9 percentile)to get a closer view of the pattern. The reason for this 
-	pattern is not clear requires further investigation.
+	(99.9 percentile)to get a closer view of the pattern. This could be attributed 
+	to users coming back to websites when they get free at lunch dinner afyer work hours etc.
+	which exhibits some seasonality. 
 	'''
 	# Plot the histogram of individual deltas
 	filteredTimes = np.array(interEventTime)

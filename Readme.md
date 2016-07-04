@@ -1,7 +1,7 @@
 ### Summary of Analysis
 
 * The min time window between two session was estimated to about 35 min
-* All loggs were sessionized using this time window.
+* All logs were sessionized using this time window.
 * The average session time is about 169.55 sec ~ 2min 50 sec
 * Distribution of the session time yields a knee point at around 350sec 
 * All records having session time >= 350 sec were filtered out as HighSessionTime records.

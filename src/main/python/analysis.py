@@ -1,22 +1,37 @@
 '''
 This file contains methods and class definitions used for  data analysis 
-sessions of IPs. An attempt is made  to understand what the min 
+sessions of IPs. 
+* An attempt is made  to understand what the min 
 inactivity window between two reqs should be to consider them as part of different 
-sessions
+sessions. 
+* Once the window is arrived upon, the records are sessionized and the 
+sessions with high session time are filtered from the entire dataset.
+* Features are the derived for each session to compare the high session time
+records from the low session time records.
+* Results of the analysis are presented in the comments at the end of the section
 '''
+
 from pyspark import SparkContext
 from pyspark.sql import SQLContext
 from pyspark.sql import Row
 import re
 import numpy as np 
 from datetime import datetime
+import matplotlib.pyplot as plt
 
+
+## PARSER METHODS
+
+'''
+parser - Method to parse the raw logs and split into required fields 
+
+'''
 def parser(x):
 	# remove the data in double quotes first by spliting on double quotes
 	tempVar = (re.split(' \"|\" ',x))
 	retValues = tempVar[0].split(" ") + tempVar[1:3] + tempVar[3].split(" ")
 	ret = dict(zip(headerbc.value,retValues))
-	# convert timestamp to 
+	# convert timestamp to date time object
 	ret['timestamp'] = datetime.strptime(ret['timestamp'],'%Y-%m-%dT%H:%M:%S.%fZ')
 	# convert all time duration captured to floating point numbers
 	ret['request_processing_time'] =  float(ret['request_processing_time'])
@@ -24,6 +39,10 @@ def parser(x):
 	ret['response_processing_time'] = float(ret['response_processing_time'])
 	return ret
 
+'''
+getDeltas - method to get time difference between consecutive request events 
+            Takes array of rawRDD records as input
+'''
 def getDeltas(x):
 	out = []
 	for i in range(len(x) - 1) :
@@ -31,6 +50,11 @@ def getDeltas(x):
 		out = out + [elapsedTime.total_seconds()/60.0]
 	return out
 
+'''
+splitOnSessionDelta - method to split a group of consecutive request events into sessions
+					  based on assumption that delta in timestamp of consecutive events 
+					  cannot exceed thrshold.
+'''
 def splitOnSessionDelta(x,threshold):
 	ip = x[0]
 	deltas = getDeltas(x[1])
@@ -47,6 +71,11 @@ def splitOnSessionDelta(x,threshold):
 		out = [x]
 	return out
 
+'''
+pruneSessions -  method to prune consecutive duplicate records in a session 
+
+'''
+
 def pruneSessions(x):
 	fullurlset = [i['request'] for i in x[1]]
 	urls = set(fullurlset) # changes sorting
@@ -55,12 +84,24 @@ def pruneSessions(x):
 		ret = ret + [x[1][fullurlset.index(i)]]
 	return (x[0],sorted(ret,key=lambda k : k['timestamp']))
 
+
+
+
+
+## FEATURE GENERATION METHODS
+'''
+getPath  - method to get the first directory in the path of the request url
+'''
+
 def getPath(url):
 	elems = re.findall(r'\.[a-zA-Z0-9]+:?[0-9]*(\/[a-zA-Z0-9]+)\/',url)
 	if len(elems) == 0 :
 		elems = re.findall(r'\.[a-zA-Z0-9]+:?[0-9]*(\/[a-zA-Z0-9]*)',url)
 	return (elems[0] if len(elems) > 0 else "/")
 
+'''
+getSessionTime -  method to get time duration of a particular session
+'''
 def getSessionTime(x):
 	ret = 0
 	if len(x[1]) > 1:
@@ -70,11 +111,20 @@ def getSessionTime(x):
 	max(0.0,x[1][-1]["backend_processing_time"]) + \
 	max(0.0,x[1][-1]["response_processing_time"]))
 
+'''
+countKPIs  - method to count number of occurances of each element of y 
+			 in x
+'''
+
 def countKPIs(x,y,name):
 	ret = []
 	for i in y:
 		ret = ret+[(name+"_"+i.replace('.','*'),x.count(i))]
 	return ret
+
+'''
+createKPIs  - method to create all features
+'''
 
 def createKPIs(x,formapper=True):
 	# Session time
@@ -135,21 +185,72 @@ header = [
 	"backend_status_code","received_bytes","sent_bytes","request","user_agent",
 	"ssl_cipher","ssl_protocol"
 ]
-headerbc=sc.broadcast(header)
 
+headerbc=sc.broadcast(header)
 rawRDD = sc.textFile(dataPath).distinct().map(parser).cache()
 #MIN date  : datetime.datetime(2015, 7, 22, 2, 40, 6, 499174)
 #MAX date  : datetime.datetime(2015, 7, 22, 21, 10, 27, 993803)
-sessionAnalysisRDD = rawRDD.map(
+
+ipGroupedAnalysisRDD = rawRDD.map(
 	lambda x: (x['client:port'].split(':')[0] , [x])
 	).reduceByKey(
 	lambda a,b : a + b
 	).map(
 	lambda x: (x[0],sorted(x[1],key=lambda k: k['timestamp']))
-	).flatMap(
+	).cache()
+
+'''
+The ipGroupedAnalysisRDD is essentially rawRDD (data provided) grouped 
+at an IP level, with the objects in individual groups arranged in order
+of increasing timestamp.
+Time deltas between all immediate requests made by each IP are calculated and
+using the getDeltas method shown below.
+'''
+
+# calculate time duration between individual time stamps
+# number of records are small hence can be collected without sampling.
+interEventTime = ipGroupedAnalysisRDD.flatMap(
+	lambda x: getDeltas(x[1])
+	).collect()
+#print np.percentile(interEventTime,95)
+
+'''
+95%  of inter event deltas occur within 1.001 min
+beyond that the distribution reduces about 0 around 35min beyond which it 
+increases and decreases in cycles. The histogram plotted below gives a 
+better idea about the same. 
+We plot the histogram of all values greater that 1  and less that 536 
+(99.9 percentile)to get a closer view of the pattern. This could be attributed 
+to users coming back to websites when they get free at lunch dinner afyer work hours etc.
+which might exhibit some seasonality. 
+'''
+
+# Plot the histogram of individual deltas
+filteredTimes = np.array(interEventTime)
+filteredTimes = filteredTimes[(filteredTimes > 1) & (filteredTimes < 536)]
+hist, bins = np.histogram(filteredTimes, bins=100)
+width = 0.7 * (bins[1] - bins[0])
+center = (bins[:-1] + bins[1:]) / 2
+plt.figure(0)
+plt.bar(center, hist, align='center', width=width)
+plt.title("Inter Request Time")
+plt.xlabel("Time in min between consec reqs")
+plt.ylabel("Frequency")
+#plt.show()
+plt.savefig(dataHome+"inter_even_time.png")
+
+'''
+We see that the distribution dips to 0 first at around window = 35min 
+We can take this time as the min time window between sessions 
+Next sessionize the grouped records based on time window threshold we have derived.
+
+**** ANSWER 1
+
+'''
+
+sessionAnalysisRDD = ipGroupedAnalysisRDD.flatMap(
 	lambda x: splitOnSessionDelta(x,threshold=35)
 	).cache()
-#.map(pruneSessions).cache()
 
 avgSessionTime = sessionAnalysisRDD.map(getSessionTime).reduce(lambda a,b : a+b)
 avgSessionTime = avgSessionTime/(sessionAnalysisRDD.count())
@@ -159,6 +260,7 @@ sessionTimes = sessionTimes[(sessionTimes < 2000)]
 hist, bins = np.histogram(sessionTimes, bins=100)
 width = 0.7 * (bins[1] - bins[0])
 center = (bins[:-1] + bins[1:]) / 2
+plt.figure(1)
 plt.bar(center, hist, align='center', width=width)
 plt.title("Session Time Distribution")
 plt.xlabel("Session Time")
@@ -166,8 +268,9 @@ plt.ylabel("Frequency")
 #plt.show()
 plt.savefig(dataHome+"session_time.png")
 
-
 '''
+**** ANSWER 2
+
 The average session time is about 3 min . The max session time however goes upto 54 min.
 The distribution clearly shows a knee at around 350-400 sec. That roughly is around 
 the 90 percentile mark. The top 10%  shows different behavior as compared to the bottom 90%
@@ -191,26 +294,26 @@ host = sorted(host,key=lambda x: -x[1])[0:6]
 sslprot=rawRDD.map(lambda x: (x['ssl_protocol'],1)).reduceByKey(lambda a,b:a+b).collect()
 sslprot = sorted(sslprot,key x : x[1])
 # [u'TLSv1.1', u'TLSv1', u'TLSv1.2', u'-']
-
 #backstatus=rawRDD.map(lambda x: (x['backend_status_code'][0],1)).reduceByKey(lambda a,b:a+b).collect()
 #backstatus=sorted(backstatus,key=lambda x:x[1])
 # [0,2,3,4,5] for [0,2xx,3xx,4xx,5xx]
-
 elbstatus=rawRDD.map(lambda x: (x['elb_status_code'][0],1)).reduceByKey(lambda a,b:a+b).collect()
 elbstatus=sorted(elbstatus,key=lambda x: x[1])
 # [2,3,4,5] for [2xx,3xx,4xx,5xx]
-
 bip=rawRDD.filter(lambda x: x['backend:port'] != '-').map(lambda x: (x['backend:port'].split(":")[0],1)).reduceByKey(lambda a,b:a+b).collect()
 # ['-',u'10.0.4.176', u'10.0.4.217', u'10.0.6.99', u'10.0.6.158', u'10.0.4.227', u'10.0.4.150', u'10.0.6.195', u'10.0.4.225', u'10.0.6.199', u'10.0.6.108', u'10.0.6.178', u'10.0.4.244']
-
 #cport = rawRDD.map(lambda x: (x['client:port'].split(":")[1],1)).reduceByKey(lambda a,b:a+b).collect()
 # large number of ports and hence unimportant
-
 # elb has just one distinct value hence not considering 
 
 
 '''
-Create KPIs for each session.  
+Create KPIs for each session and split into High and Low session time users
+Num unique urls per session stored as numurls
+
+**** ANSWER 3
+
+**** ANSWER 4
 
 '''
 
@@ -227,54 +330,6 @@ LowSessionTimeUsers = KPIs.filter(KPIs['sessiontime']  < 350)
 HighSessionTimeUsers = KPIs.filter(KPIs['sessiontime']  >= 350)
 
 '''
-High
-+-------+------------------+------------------+------------------+------------------+-----------------+------------------+
-|summary|         request_/|      request_/api|  request_/favicon|    request_/offer|    request_/papi|     request_/shop|
-+-------+------------------+------------------+------------------+------------------+-----------------+------------------+
-|  count|             11056|             11056|             11056|             11056|            11056|             11056|
-|   mean|1.5596056439942112|0.4107272069464544|0.2828328509406657|6.2950434153400865|9.865683791606367|14.140828509406656|
-| stddev|  3.84673256334449|1.0656381186984494|0.9887005975325149|23.616626636232027|172.0388083080011|112.82251834167688|
-|    min|                 0|                 0|                 0|                 0|                0|                 0|
-|    max|               172|                17|                36|               660|            13431|              5568|
-+-------+------------------+------------------+------------------+------------------+-----------------+------------------+
-
-Low
-+-------+------------------+------------------+-------------------+------------------+------------------+------------------+
-|summary|         request_/|      request_/api|   request_/favicon|    request_/offer|     request_/papi|     request_/shop|
-+-------+------------------+------------------+-------------------+------------------+------------------+------------------+
-|  count|             94411|             94411|              94411|             94411|             94411|             94411|
-|   mean|0.4631981442840347|0.1533084068593702|0.15645422673205453|2.2319221277181684|1.5186683755070913|3.1580959845780683|
-| stddev|1.6211414455262967|0.5326438795047537| 0.4706176050315895| 12.71606852864698|26.145092668387658|15.904051847109157|
-|    min|                 0|                 0|                  0|                 0|                 0|                 0|
-|    max|               393|                21|                 46|               567|              5114|              2083|
-+-------+------------------+------------------+-------------------+------------------+------------------+------------------+
-
-
-High
-+-------+------------------+------------------+------------------+--------------------+
-|summary| elb_status_code_2| elb_status_code_3| elb_status_code_4|   elb_status_code_5|
-+-------+------------------+------------------+------------------+--------------------+
-|  count|             11056|             11056|             11056|               11056|
-|   mean|29.544138929088277| 4.217076700434154|0.5813133140376266|0.019627351664254705|
-| stddev|231.14216756062183|12.886531263576801| 9.856431637520654|  0.3637511070841117|
-|    min|                 0|                 0|                 0|                   0|
-|    max|             13431|               653|               548|                  23|
-+-------+------------------+------------------+------------------+--------------------+
-
-
-Low
-+-------+-----------------+------------------+-------------------+--------------------+
-|summary|elb_status_code_2| elb_status_code_3|  elb_status_code_4|   elb_status_code_5|
-+-------+-----------------+------------------+-------------------+--------------------+
-|  count|            94411|             94411|              94411|               94411|
-|   mean|  7.0057514484541|1.1241274851447396|0.11351431506921864|0.003442395483577...|
-| stddev|35.78793946769989|  5.47454881969022|  5.717455407437703| 0.17282493765972426|
-|    min|                0|                 0|                  0|                   0|
-|    max|             4657|               462|               1564|                  36|
-+-------+-----------------+------------------+-------------------+--------------------+
-
-
-
 High
 +-------+------------------+------------------+-------------------+--------------------+
 |summary|           numurls|       sessiontime|         timeperurl|       avgdeltatimes|
@@ -297,6 +352,10 @@ Low
 |    max|             4656|349.41524999999996|        341.397474|  2.9111481416666667|
 +-------+-----------------+------------------+------------------+--------------------+
 
+This shows that number of unique urls visited by high session time sessions is much higher as compared to 
+low session time sessions. The overall session time is also much higher. The high session time users spend 
+upto 3 min on an average per URL as compared to 9.9 sec of low session time users.
+
 High
 +-------+-----------------------------------+-----------------------------------+------------------------------------+
 |summary|avg_backend_processing_time_per_url|avg_request_processing_time_per_url|avg_response_processing_time_per_url|
@@ -318,6 +377,8 @@ Low
 |    min|                             1.8E-4|                             1.1E-5|                             1.05E-5|
 |    max|                  34.82180686666666|               0.043637000000000474|                 0.04032500000000015|
 +-------+-----------------------------------+-----------------------------------+------------------------------------+
+
+The backend processing time of the high session rime uses is also higher as compared to low session time users.
 
 
 
@@ -344,31 +405,34 @@ Low
 |    max|                     32413.8|              2.689372E7|
 +-------+----------------------------+------------------------+
 
+The total data sent by low session time users and high session time users 
+per url is also very skewed. This indicates that High session time session may be POST request heavy.
+
 
 High
-+-------+-------------------+------------------+------------------+-----------------+
-|summary|          sslport_-|     sslport_TLSv1|   sslport_TLSv1*1|  sslport_TLSv1*2|
-+-------+-------------------+------------------+------------------+-----------------+
-|  count|              11056|             11056|             11056|            11056|
-|   mean|0.20468523878437048| 7.065394356005789|0.9581222865412445|26.13395441389291|
-| stddev| 1.8781949364547796|150.09116292637506| 34.55432813701249|180.9842122531545|
-|    min|                  0|                 0|                 0|                0|
-|    max|                 69|             13431|              2848|            11609|
-+-------+-------------------+------------------+------------------+-----------------+
++-------+------------------+------------------+------------------+------------------+-----------------+------------------+
+|summary|         request_/|      request_/api|  request_/favicon|    request_/offer|    request_/papi|     request_/shop|
++-------+------------------+------------------+------------------+------------------+-----------------+------------------+
+|  count|             11056|             11056|             11056|             11056|            11056|             11056|
+|   mean|1.5596056439942112|0.4107272069464544|0.2828328509406657|6.2950434153400865|9.865683791606367|14.140828509406656|
+| stddev|  3.84673256334449|1.0656381186984494|0.9887005975325149|23.616626636232027|172.0388083080011|112.82251834167688|
+|    min|                 0|                 0|                 0|                 0|                0|                 0|
+|    max|               172|                17|                36|               660|            13431|              5568|
++-------+------------------+------------------+------------------+------------------+-----------------+------------------+
 
 Low
-+-------+-------------------+------------------+-------------------+------------------+
-|summary|          sslport_-|     sslport_TLSv1|    sslport_TLSv1*1|   sslport_TLSv1*2|
-+-------+-------------------+------------------+-------------------+------------------+
-|  count|              94411|             94411|              94411|             94411|
-|   mean|0.06312823717575282|  1.54889790384595|0.17626124074525215|  6.45854826238468|
-| stddev| 0.6160456917442287|24.985054957302697|   17.9658362594024|25.032684180618087|
-|    min|                  0|                 0|                  0|                 0|
-|    max|                130|              4387|               5114|              3831|
-+-------+-------------------+------------------+-------------------+------------------+
++-------+------------------+------------------+-------------------+------------------+------------------+------------------+
+|summary|         request_/|      request_/api|   request_/favicon|    request_/offer|     request_/papi|     request_/shop|
++-------+------------------+------------------+-------------------+------------------+------------------+------------------+
+|  count|             94411|             94411|              94411|             94411|             94411|             94411|
+|   mean|0.4631981442840347|0.1533084068593702|0.15645422673205453|2.2319221277181684|1.5186683755070913|3.1580959845780683|
+| stddev|1.6211414455262967|0.5326438795047537| 0.4706176050315895| 12.71606852864698|26.145092668387658|15.904051847109157|
+|    min|                 0|                 0|                  0|                 0|                 0|                 0|
+|    max|               393|                21|                 46|               567|              5114|              2083|
++-------+------------------+------------------+-------------------+------------------+------------------+------------------+
 
-
-'''
+The proportion of papi calls seem significantly higher in higher sessiontime sessions as compared 
+to lower session time sessions. This is further made evident by the frequecy count described below
 
 LowSessionUsersSiteDetails =LowSessionTimeUsers.map(lambda x: (
 	1 if x['request_/'] > 0 else 0 ,
@@ -380,6 +444,7 @@ LowSessionUsersSiteDetails =LowSessionTimeUsers.map(lambda x: (
 	)).toDF(
 	['request_/','request_/api','request_/favicon','request_/offer','request_/papi','request_/shop']
 	).groupBy(['request_/offer','request_/papi','request_/shop']).count().orderBy("count",ascending=0)
+
 
 HighSessionUsersSiteDetails =HighSessionTimeUsers.map(lambda x: (
 	1 if x['request_/'] > 0 else 0 ,
@@ -393,7 +458,6 @@ HighSessionUsersSiteDetails =HighSessionTimeUsers.map(lambda x: (
 	).groupBy(['request_/offer','request_/papi','request_/shop']).count().orderBy("count",ascending=0)
 
 
-'''
 High
 	+--------------+-------------+-------------+-----+
 	|request_/offer|request_/papi|request_/shop|count|
@@ -424,5 +488,33 @@ Low
 	|             1|            1|            0|   69|
 	+--------------+-------------+-------------+-----+
 
-'''
 
+
+High
++-------+------------------+------------------+------------------+--------------------+
+|summary| elb_status_code_2| elb_status_code_3| elb_status_code_4|   elb_status_code_5|
++-------+------------------+------------------+------------------+--------------------+
+|  count|             11056|             11056|             11056|               11056|
+|   mean|29.544138929088277| 4.217076700434154|0.5813133140376266|0.019627351664254705|
+| stddev|231.14216756062183|12.886531263576801| 9.856431637520654|  0.3637511070841117|
+|    min|                 0|                 0|                 0|                   0|
+|    max|             13431|               653|               548|                  23|
++-------+------------------+------------------+------------------+--------------------+
+
+
+Low
++-------+-----------------+------------------+-------------------+--------------------+
+|summary|elb_status_code_2| elb_status_code_3|  elb_status_code_4|   elb_status_code_5|
++-------+-----------------+------------------+-------------------+--------------------+
+|  count|            94411|             94411|              94411|               94411|
+|   mean|  7.0057514484541|1.1241274851447396|0.11351431506921864|0.003442395483577...|
+| stddev|35.78793946769989|  5.47454881969022|  5.717455407437703| 0.17282493765972426|
+|    min|                0|                 0|                  0|                   0|
+|    max|             4657|               462|               1564|                  36|
++-------+-----------------+------------------+-------------------+--------------------+
+
+
+# There seem to be slightly higher 4xx / 5xx errors amongst high sessiontime users as 
+compared to low session time users
+
+'''

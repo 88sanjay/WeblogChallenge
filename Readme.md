@@ -26,6 +26,6 @@ as compared to sessions with lesser time
 ### Platform and Tools Used
 
 * Entire analysis was done using spark and python libraries 
-* Currently working on the scala code for the same. Will update the repo as soon as I finish.
+* Have written scala code for feature generation 
 
  

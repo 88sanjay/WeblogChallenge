@@ -56,27 +56,29 @@ object LogParser extends java.io.Serializable {
     }
 }
 
-// object FeatureExtraction {
+object FeatureExtraction {
 
-//     def getPath(url:String): String = {
-        
-//         elems = re.findall(r'\.[a-zA-Z0-9]+:?[0-9]*(\/[a-zA-Z0-9]+)\/',url)
-//         if len(elems) == 0 :
-//             elems = re.findall(r'\.[a-zA-Z0-9]+:?[0-9]*(\/[a-zA-Z0-9]*)',url)
-//         return (elems[0] if len(elems) > 0 else "/")
-//     }
+    def getPath(url:String): String = {
+        var pattern = """\.[a-zA-Z0-9]+:?[0-9]*(\/[a-zA-Z0-9]+)\/""".r
+        var elems = pattern.findFirstMatchIn(url)
+        if (elems == None ) {
+            pattern = """\.[a-zA-Z0-9]+:?[0-9]*(\/[a-zA-Z0-9]*)""".r
+            elems = pattern.findFirstInm.(url)
+        }
+        return (if (elems !=  None) elems.get.group(1) else "/")
+    }
 
 // '''
 // getSessionTime -  method to get time duration of a particular session
 // '''
-// def getSessionTime(x):
-//     ret = 0
-//     if len(x[1]) > 1:
-//         delta = x[1][-1]["timestamp"] - x[1][0]["timestamp"]
-//         ret = delta.total_seconds()
-//     return (ret + max(0.0,x[1][-1]["request_processing_time"]) + \
-//     max(0.0,x[1][-1]["backend_processing_time"]) + \
-//     max(0.0,x[1][-1]["response_processing_time"]))
+    // def getSessionTime(x):
+    //     ret = 0
+    //     if len(x[1]) > 1:
+    //         delta = x[1][-1]["timestamp"] - x[1][0]["timestamp"]
+    //         ret = delta.total_seconds()
+    //     return (ret + max(0.0,x[1][-1]["request_processing_time"]) + \
+    //     max(0.0,x[1][-1]["backend_processing_time"]) + \
+    //     max(0.0,x[1][-1]["response_processing_time"]))
 
 // '''
 // countKPIs  - method to count number of occurances of each element of y 

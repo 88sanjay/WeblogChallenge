@@ -84,9 +84,6 @@ def pruneSessions(x):
 	return (x[0],sorted(ret,key=lambda k : k['timestamp']))
 
 
-
-
-
 ## FEATURE GENERATION METHODS
 '''
 getPath  - method to get the first directory in the path of the request url

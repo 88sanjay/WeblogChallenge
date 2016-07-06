@@ -1,1 +1,5 @@
 *.log
+./src/main/scala/resolution-cache
+./src/main/scala/scala-2.10
+./src/main/scala/scala-2.11
+./src/main/scala/streams
